@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"go-downloader/pkg/downloader"
-	"go-downloader/pkg/storage"
+	"github.com/PauloSm/go-downloader/pkg/downloader"
+	"github.com/PauloSm/go-downloader/pkg/storage"
 	"os"
 )
 
