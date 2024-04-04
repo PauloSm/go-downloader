@@ -48,11 +48,20 @@ func (h *HttpDownloader) GetFileSize(url string) (int, error) {
 }
 
 func (h *HttpDownloader) DownloadChunk(url string, start, end int) ([]byte, error) {
-	req, _ := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 	client := &http.Client{}
-	resp, _ := client.Do(req)
-	body, _ := io.ReadAll(resp.Body)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 	return body, nil
 }
 
@@ -70,7 +79,10 @@ func NewService(r FileRepository, s Storage) *Service {
 }
 
 func (s *Service) DownloadFile(url, path string) error {
-	size, _ := s.repo.GetFileSize(url)
+	size, err := s.repo.GetFileSize(url)
+	if err != nil {
+		return err
+	}
 	chunkSize := size / 10
 
 	var wg sync.WaitGroup
@@ -97,4 +109,3 @@ func (s *Service) DownloadFile(url, path string) error {
 
 	return s.storage.Save(path, data)
 }
-
