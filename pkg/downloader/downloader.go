@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,7 +38,7 @@ func (h *HttpDownloader) GetFileSize(url string) (int, error) {
 	contentRange := resp.Header.Get("Content-Range")
 	parts := strings.Split(contentRange, "/")
 	if len(parts) < 2 {
-		return 0, fmt.Errorf("Content-Range header is not in a valid format")
+		return 0, errors.New("Content-Range header is not in a valid format")
 	}
 	fileSize, err := strconv.Atoi(parts[1])
 	if err != nil {
@@ -58,15 +59,20 @@ func (h *HttpDownloader) DownloadChunk(url string, start, end int) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
+
 	return body, nil
 }
 
 type Storage interface {
 	Save(path string, data []byte) error
+	Read(path string) ([]byte, error)
+	Delete(path string) error
 }
 
 type Service struct {
@@ -83,29 +89,83 @@ func (s *Service) DownloadFile(url, path string) error {
 	if err != nil {
 		return err
 	}
-	chunkSize := size / 10
+	chunkSize := calculateChunkSize(size)
 
 	var wg sync.WaitGroup
-	chunks := make([][]byte, 10)
-	for i := 0; i < 10; i++ {
+	errChan := make(chan error, 1)
+	for i := 0; i < numChunks(size, chunkSize); i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			start := i * chunkSize
-			end := start + chunkSize - 1
-			if i == 9 {
-				end = size
+			end := (i+1)*chunkSize - 1
+			if i == numChunks(size, chunkSize)-1 {
+				end = size - 1
 			}
-			chunk, _ := s.repo.DownloadChunk(url, start, end)
-			chunks[i] = chunk
+			chunk, err := s.repo.DownloadChunk(url, start, end)
+			if err != nil {
+				select {
+				case errChan <- err:
+				default:
+				}
+				return
+			}
+			chunkPath := fmt.Sprintf("%s.part%d", path, i)
+			err = s.storage.Save(chunkPath, chunk)
+			if err != nil {
+				select {
+				case errChan <- err:
+				default:
+				}
+				return
+			}
 		}(i)
 	}
-	wg.Wait()
 
-	var data []byte
-	for _, chunk := range chunks {
-		data = append(data, chunk...)
+	go func() {
+		wg.Wait()
+		close(errChan)
+	}()
+
+	if err, ok := <-errChan; ok {
+		return err
 	}
 
-	return s.storage.Save(path, data)
+	for i := 0; i < numChunks(size, chunkSize); i++ {
+		chunkPath := fmt.Sprintf("%s.part%d", path, i)
+		chunkData, err := s.storage.Read(chunkPath)
+		if err != nil {
+			return err
+		}
+		err = s.storage.Save(path, chunkData)
+		if err != nil {
+			return err
+		}
+		err = s.storage.Delete(chunkPath)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func calculateChunkSize(size int) int {
+	const minChunkSize = 1024 * 1024
+	const idealChunks = 10
+
+	chunkSize := size / idealChunks
+	if chunkSize < minChunkSize {
+		chunkSize = minChunkSize
+	}
+
+	return chunkSize
+}
+
+func numChunks(size, chunkSize int) int {
+	chunks := size / chunkSize
+	if size%chunkSize != 0 {
+		chunks++
+	}
+	return chunks
 }
